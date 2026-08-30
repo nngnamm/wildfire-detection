@@ -1,0 +1,26 @@
+# Dataset (too large / not ours to redistribute — download separately via Kaggle)
+dataset/*
+!dataset/.gitkeep
+
+# Trained model weights (large binary files, regenerate by training)
+*.pth
+*.pt
+
+# Grad-CAM output images (generated, not source)
+gradcam_output.png
+gradcam_grid.png
+gradcam_failures.png
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+env/
+*.egg-info/
+
+# OS/editor cruft
+.DS_Store
+.vscode/
+.idea/

@@ -151,3 +151,219 @@ def explain_prediction(model, input_tensor: torch.Tensor, save_path: str = "grad
     print(f"[explain] Grad-CAM overlay saved to '{save_path}'")
 
     return heatmap, prob
+
+
+def generate_comparison_grid(
+    model,
+    test_dataset,
+    eval_transform,
+    class_to_idx: dict,
+    device: str,
+    n_per_class: int = 4,
+    save_path: str = "gradcam_grid.png",
+):
+    """
+    Runs Grad-CAM on several wildfire images AND several no-wildfire images
+    from the test set, side by side in one grid image: top row = original
+    image, bottom row = Grad-CAM overlay, with the true label and the
+    model's predicted probability captioned on each.
+
+    This exists because a single Grad-CAM image tells you very little —
+    it could be a lucky example either way. Looking at several images from
+    both classes at once lets you check whether the model's attention is
+    *consistent* (e.g. always on terrain/vegetation patterns for wildfire
+    images) rather than judging from one anecdotal heatmap.
+
+    Args:
+        model: trained WildfireResNet50 model.
+        test_dataset: the underlying torchvision ImageFolder dataset
+                       (e.g. test_loader.dataset) — used to find file
+                       paths per class without loading everything into
+                       memory first.
+        eval_transform: the same resize/normalize transform used for
+                         evaluation (from get_transforms()).
+        class_to_idx: dict like {'nowildfire': 0, 'wildfire': 1}, used to
+                       label images correctly regardless of which index
+                       ImageFolder assigned to which class name.
+        device: 'cuda' or 'cpu'.
+        n_per_class: how many images to sample from each class.
+        save_path: where to save the resulting grid image.
+    """
+    import matplotlib.pyplot as plt
+    from PIL import Image
+
+    idx_to_class = {idx: name for name, idx in class_to_idx.items()}
+    wildfire_idx = class_to_idx["wildfire"]
+    nowildfire_idx = class_to_idx["nowildfire"]
+
+    wildfire_samples = [s for s in test_dataset.samples if s[1] == wildfire_idx][:n_per_class]
+    nowildfire_samples = [s for s in test_dataset.samples if s[1] == nowildfire_idx][:n_per_class]
+    all_samples = wildfire_samples + nowildfire_samples
+
+    if len(all_samples) == 0:
+        raise ValueError("No samples found for the given classes — check class_to_idx and test_dataset.")
+
+    n = len(all_samples)
+    fig, axes = plt.subplots(2, n, figsize=(3 * n, 6.5))
+    # If there's only one column, axes won't be 2D — normalize its shape
+    # so the indexing below (axes[row, col]) always works.
+    if n == 1:
+        axes = axes.reshape(2, 1)
+
+    target_layer = model.backbone.layer4[-1]
+
+    for i, (path, true_idx) in enumerate(all_samples):
+        image = Image.open(path).convert("RGB")
+        input_tensor = eval_transform(image).unsqueeze(0).to(device)
+
+        cam = GradCAM(model, target_layer)
+        heatmap, prob = cam.generate(input_tensor)
+        cam.remove_hooks()
+
+        original_image = denormalize_image(input_tensor.squeeze(0))
+        overlay = overlay_heatmap_on_image(heatmap, original_image)
+
+        true_label = idx_to_class[true_idx]
+        pred_label = "wildfire" if prob >= 0.5 else "nowildfire"
+        correct = "\u2713" if pred_label == true_label else "\u2717"
+
+        axes[0, i].imshow(original_image)
+        axes[0, i].axis("off")
+        axes[0, i].set_title(f"True: {true_label}", fontsize=9)
+
+        axes[1, i].imshow(overlay)
+        axes[1, i].axis("off")
+        axes[1, i].set_title(f"Pred: {pred_label} ({prob:.2f}) {correct}", fontsize=9)
+
+    plt.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
+
+    print(f"[explain] Comparison grid ({len(wildfire_samples)} wildfire + "
+          f"{len(nowildfire_samples)} nowildfire) saved to '{save_path}'")
+
+
+@torch.no_grad()
+def _predict_all(model, test_dataset, eval_transform, device, batch_size: int = 32):
+    """
+    Runs the model over every image in test_dataset and returns a list of
+    (file_path, true_label_idx, predicted_probability) for each one. Used
+    by find_and_explain_misclassified() to locate real failure cases
+    without needing gradients (no backward pass here — this is just a
+    fast scan to find which files the model got wrong).
+    """
+    from torch.utils.data import DataLoader
+
+    loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, num_workers=0)
+    results = []
+    sample_idx = 0
+
+    model.eval()
+    for images, labels in loader:
+        images = images.to(device)
+        probs = model(images).cpu().numpy().flatten()
+
+        for prob, label in zip(probs, labels.numpy()):
+            path, _ = test_dataset.samples[sample_idx]
+            results.append((path, int(label), float(prob)))
+            sample_idx += 1
+
+    return results
+
+
+def find_and_explain_misclassified(
+    model,
+    test_dataset,
+    eval_transform,
+    class_to_idx: dict,
+    device: str,
+    n_per_type: int = 4,
+    save_path: str = "gradcam_failures.png",
+):
+    """
+    Finds real false negatives (actual wildfire, predicted no-wildfire)
+    and false positives (actual no-wildfire, predicted wildfire) in the
+    test set, runs Grad-CAM on a sample of each, and saves them in one
+    comparison grid.
+
+    Unlike testing on an image found online, every image here comes from
+    the same distribution the model was trained and evaluated on, so any
+    pattern found is a genuine model limitation rather than an artifact
+    of a different image source, region, or color processing.
+
+    Args:
+        model: trained WildfireResNet50 model.
+        test_dataset: the underlying torchvision ImageFolder dataset
+                       (e.g. test_loader.dataset).
+        eval_transform: the same resize/normalize transform used for
+                         evaluation (from get_transforms()).
+        class_to_idx: dict like {'nowildfire': 0, 'wildfire': 1}.
+        device: 'cuda' or 'cpu'.
+        n_per_type: how many false negatives and false positives to show
+                    (skipped if fewer exist than requested).
+        save_path: where to save the resulting grid image.
+    """
+    import matplotlib.pyplot as plt
+    from PIL import Image
+
+    wildfire_idx = class_to_idx["wildfire"]
+    nowildfire_idx = class_to_idx["nowildfire"]
+
+    print("[explain] Scanning test set for misclassified images (this runs the "
+          "full test set through the model once, no gradients — should be much "
+          "faster than training)...")
+    all_results = _predict_all(model, test_dataset, eval_transform, device)
+
+    false_negatives = [(p, prob) for p, label, prob in all_results
+                        if label == wildfire_idx and prob < 0.5][:n_per_type]
+    false_positives = [(p, prob) for p, label, prob in all_results
+                        if label == nowildfire_idx and prob >= 0.5][:n_per_type]
+
+    print(f"[explain] Found {len(false_negatives)} false negative(s) and "
+          f"{len(false_positives)} false positive(s) to display (showing up to "
+          f"{n_per_type} of each).")
+
+    all_samples = (
+        [(p, wildfire_idx, prob) for p, prob in false_negatives] +
+        [(p, nowildfire_idx, prob) for p, prob in false_positives]
+    )
+
+    if len(all_samples) == 0:
+        print("[explain] No misclassified images found — nothing to plot.")
+        return
+
+    idx_to_class = {idx: name for name, idx in class_to_idx.items()}
+    n = len(all_samples)
+    fig, axes = plt.subplots(2, n, figsize=(3 * n, 6.5))
+    if n == 1:
+        axes = axes.reshape(2, 1)
+
+    target_layer = model.backbone.layer4[-1]
+
+    for i, (path, true_idx, precomputed_prob) in enumerate(all_samples):
+        image = Image.open(path).convert("RGB")
+        input_tensor = eval_transform(image).unsqueeze(0).to(device)
+
+        cam = GradCAM(model, target_layer)
+        heatmap, prob = cam.generate(input_tensor)  # re-run with gradients enabled for Grad-CAM
+        cam.remove_hooks()
+
+        original_image = denormalize_image(input_tensor.squeeze(0))
+        overlay = overlay_heatmap_on_image(heatmap, original_image)
+
+        true_label = idx_to_class[true_idx]
+        error_type = "False Negative" if true_idx == wildfire_idx else "False Positive"
+
+        axes[0, i].imshow(original_image)
+        axes[0, i].axis("off")
+        axes[0, i].set_title(f"True: {true_label}\n({error_type})", fontsize=9)
+
+        axes[1, i].imshow(overlay)
+        axes[1, i].axis("off")
+        axes[1, i].set_title(f"Pred prob: {prob:.2f}", fontsize=9)
+
+    plt.tight_layout()
+    fig.savefig(save_path, dpi=150)
+    plt.close(fig)
+
+    print(f"[explain] Failure-case grid saved to '{save_path}'")

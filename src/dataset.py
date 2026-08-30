@@ -28,8 +28,19 @@ import os
 from typing import Tuple
 
 import torch
+from PIL import ImageFile
 from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
+
+# Large datasets pulled from a zip (e.g. downloaded from Kaggle) sometimes
+# contain a handful of images that got slightly cut off during download or
+# extraction. By default, PIL refuses to load a truncated image and raises
+# an OSError, which would otherwise crash an entire multi-hour training
+# run over one bad file deep into the dataset. Setting this flag tells PIL
+# to load as much of the image data as it can instead of raising. It's a
+# safety net, not a substitute for actually finding and reviewing broken
+# files — see verify_dataset() below.
+ImageFile.LOAD_TRUNCATED_IMAGES = True
 
 # ImageNet statistics used to normalize inputs, since we are using a
 # ResNet50 backbone pre-trained on ImageNet.
@@ -119,3 +130,80 @@ def get_dataloaders(data_dir: str, batch_size: int = 32, num_workers: int = 2):
     )
 
     return train_loader, val_loader, test_loader, train_dataset.class_to_idx
+
+
+def verify_dataset(data_dir: str, remove_corrupted: bool = False):
+    """
+    Scans every image file under data_dir/{train,valid,test} and tries to
+    fully load and decode it. Reports any file that fails, since those are
+    the files that will otherwise crash a DataLoader worker mid-training
+    (see the OSError: "image file is truncated" case this is meant to
+    catch).
+
+    This is a diagnostic utility, not something main.py calls automatically
+    on every run — for a 30,000+ image dataset it can take a few minutes,
+    so run it once after downloading/extracting the dataset, or whenever
+    training crashes with an image-loading error.
+
+    Args:
+        data_dir: path to the root `dataset/` folder.
+        remove_corrupted: if True, delete any file that fails to load.
+                           If False (default), only report — nothing is
+                           deleted, so you can inspect the files yourself
+                           first.
+
+    Returns:
+        List of file paths that failed to load.
+    """
+    from PIL import Image
+
+    bad_files = []
+    splits = ["train", "valid", "test"]
+    checked = 0
+
+    for split in splits:
+        split_dir = os.path.join(data_dir, split)
+        if not os.path.isdir(split_dir):
+            continue
+
+        for class_name in sorted(os.listdir(split_dir)):
+            class_dir = os.path.join(split_dir, class_name)
+            if not os.path.isdir(class_dir):
+                continue
+
+            for filename in os.listdir(class_dir):
+                file_path = os.path.join(class_dir, filename)
+                checked += 1
+                try:
+                    with Image.open(file_path) as img:
+                        img.convert("RGB").load()
+                except Exception as e:
+                    bad_files.append(file_path)
+                    print(f"[verify_dataset] CORRUPTED: {file_path} ({e})")
+
+    print(f"\n[verify_dataset] Checked {checked} files, found {len(bad_files)} corrupted.")
+
+    if bad_files and remove_corrupted:
+        for file_path in bad_files:
+            os.remove(file_path)
+        print(f"[verify_dataset] Removed {len(bad_files)} corrupted file(s).")
+    elif bad_files:
+        print("[verify_dataset] Files were NOT deleted (remove_corrupted=False). "
+              "Re-run with remove_corrupted=True to delete them, or inspect/replace manually.")
+
+    return bad_files
+
+
+if __name__ == "__main__":
+    # Convenience: `python -m src.dataset` (or `python src/dataset.py` from
+    # the project root) scans the dataset for corrupted images without
+    # running any training. Pass --remove to also delete bad files.
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Scan the dataset for corrupted image files.")
+    parser.add_argument("--data_dir", type=str, default="dataset")
+    parser.add_argument("--remove", action="store_true",
+                         help="Delete corrupted files instead of only reporting them.")
+    args = parser.parse_args()
+
+    verify_dataset(args.data_dir, remove_corrupted=args.remove)
