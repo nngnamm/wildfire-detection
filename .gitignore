@@ -10,9 +10,9 @@ dataset/*
 # (not the ones intentionally committed under assets/ for the README —
 # the leading "/" anchors these to the root only, since an unanchored
 # pattern like "gradcam_grid.png" would also match assets/gradcam_grid.png)
-/gradcam_output.png
-/gradcam_grid.png
-/gradcam_failures.png
+gradcam_output.png
+gradcam_grid.png
+gradcam_failures.png
 
 # Python
 __pycache__/
