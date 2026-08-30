@@ -1,8 +1,8 @@
 # Wildfire Detection from Satellite Imagery
 
-An end-to-end PyTorch pipeline that classifies satellite image tiles as wildfire-affected/prone terrain or not, using transfer learning on a frozen ResNet50 backbone, with Grad-CAM explainability to inspect *why* the model makes each decision.
+An PyTorch pipeline that classifies satellite image tiles as wildfire-affected/prone terrain or not, using transfer learning on a frozen ResNet50 backbone, with Grad-CAM explainability to inspect *why* the model makes each decision.
 
-Built as a personal deep learning project — dataset, model, training, evaluation, and explainability are each isolated into their own module rather than one notebook script.
+Dataset, model, training, evaluation, and explainability are each isolated into their own module rather than one notebook script.
 
 ## Problem & Dataset
 
@@ -34,9 +34,9 @@ wildfire-detection/
 
 ## Results
 
-Trained for 10 epochs (CPU). Best checkpoint selected by validation accuracy.
+Trained for 10 epochs. Best checkpoint selected by validation accuracy.
 
-![Training vs Validation Accuracy](assets/training_curve.png)
+![Training vs Validation Accuracy](training_curve.png)
 
 **Test set (6,300 images):**
 
@@ -56,17 +56,17 @@ Trained for 10 epochs (CPU). Best checkpoint selected by validation accuracy.
 
 Precision is higher than recall — the model is slightly more prone to missing a real wildfire (101 false negatives) than to raising a false alarm (42 false positives). For a safety-oriented system, that's the wrong direction to be conservative in, and it's the main thing I'd tune further (e.g. lowering the decision threshold below 0.5) if extending this project.
 
-## Grad-CAM: Is the model looking at the right thing?
+## Grad-CAM: 
 
 **Class comparison** — 4 wildfire + 4 no-wildfire test images, original above, Grad-CAM overlay below:
 
-![Grad-CAM class comparison](assets/gradcam_grid.png)
+![Grad-CAM class comparison](gradcam_grid.png)
 
 The wildfire examples' attention consistently lands on visible burn-scar-like patchy/discolored terrain rather than on undisturbed green vegetation — a good sign the model learned real, task-relevant texture rather than an arbitrary shortcut.
 
 **Real failure cases** — mining the test set for actual false negatives and false positives (not synthetic examples) and running Grad-CAM on each:
 
-![Grad-CAM failure cases](assets/gradcam_failures.png)
+![Grad-CAM failure cases](gradcam_failures.png)
 
 ## Findings & Limitations
 
