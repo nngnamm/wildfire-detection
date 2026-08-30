@@ -36,7 +36,7 @@ wildfire-detection/
 
 Trained for 10 epochs. Best checkpoint selected by validation accuracy.
 
-![Training vs Validation Accuracy](training_curve.png)
+![Training vs Validation Accuracy](assets/training_curve.png)
 
 **Test set (6,300 images):**
 
@@ -60,13 +60,12 @@ Precision is higher than recall — the model is slightly more prone to missing 
 
 **Class comparison** — 4 wildfire + 4 no-wildfire test images, original above, Grad-CAM overlay below:
 
-![Grad-CAM class comparison](gradcam_grid.png)
-
+![Grad-CAM class comparison](assets/gradcam_grid.png)
 The wildfire examples' attention consistently lands on visible burn-scar-like patchy/discolored terrain rather than on undisturbed green vegetation — a good sign the model learned real, task-relevant texture rather than an arbitrary shortcut.
 
 **Real failure cases** — mining the test set for actual false negatives and false positives (not synthetic examples) and running Grad-CAM on each:
 
-![Grad-CAM failure cases](gradcam_failures.png)
+![Grad-CAM failure cases](assets/gradcam_failures.png)
 
 ## Findings & Limitations
 
